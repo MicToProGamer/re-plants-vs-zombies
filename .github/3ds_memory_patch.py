@@ -313,4 +313,50 @@ edit(APP,
 			printf("Loading thread %s\\n", aThread ? "started" : "FAILED to start");
 		}""")
 
+# ---------------------------------------------------------------------------
+# 6. Renderer safety + diagnostics. In the emulator the screen froze after the
+#    first piece of the title screen was drawn. These guards stop the two ways
+#    that can happen (a texture that failed to allocate, a zero-size texture
+#    piece that loops forever) and print what went wrong on the top screen.
+# ---------------------------------------------------------------------------
+edit(GL,
+     "\t\t\t\tC3D_TexInit(&aPiece.mTexture, aPiece.mWidth, aPiece.mHeight, aFormatType);",
+     """\t\t\t\tif (!C3D_TexInit(&aPiece.mTexture, aPiece.mWidth, aPiece.mHeight, aFormatType))
+\t\t\t\t{
+\t\t\t\t\tprintf("TexInit FAILED %dx%d fmt %d (linear free %lu KB)\\n", aPiece.mWidth, aPiece.mHeight, (int)aFormatType, (unsigned long)(linearSpaceFree() / 1024));
+\t\t\t\t\taPiece.mTexture.data = NULL;
+\t\t\t\t}""")
+
+edit(GL,
+     "\tGPU_TEXTURE_FILTER_PARAM filter = (gLinearFilter) ? GPU_LINEAR : GPU_NEAREST;",
+     "\tif (theTex->data == NULL)\n\t\treturn;\n\tGPU_TEXTURE_FILTER_PARAM filter = (gLinearFilter) ? GPU_LINEAR : GPU_NEAREST;")
+
+edit(GL,
+     "\t\t\tC3D_Tex* aTexture = GetTexture(srcX, srcY, aWidth, aHeight, u1, v1, u2, v2);\n",
+     """\t\t\tC3D_Tex* aTexture = GetTexture(srcX, srcY, aWidth, aHeight, u1, v1, u2, v2);
+\t\t\tif (aWidth <= 0 || aHeight <= 0)
+\t\t\t{
+\t\t\t\tstatic int sBadPieceReports = 0;
+\t\t\t\tif (sBadPieceReports++ < 5)
+\t\t\t\t\tprintf("Blt: empty texture piece at %d,%d\\n", srcX, srcY);
+\t\t\t\treturn;
+\t\t\t}
+\t\t\tif (aTexture == NULL || aTexture->data == NULL)
+\t\t\t{
+\t\t\t\tsrcX += aWidth;
+\t\t\t\tdstX += aWidth;
+\t\t\t\tcontinue;
+\t\t\t}
+""", count=2)
+
+edit(GL,
+     "void GLInterface::Flush()\n{\n\tC3D_FrameEnd(0);",
+     """void GLInterface::Flush()
+{
+\tstatic int sFrame = 0;
+\tsFrame++;
+\tif (sFrame <= 3 || sFrame % 600 == 0)
+\t\tprintf("frame %d, linear free %lu KB\\n", sFrame, (unsigned long)(linearSpaceFree() / 1024));
+\tC3D_FrameEnd(0);""")
+
 print("All 3DS patches applied.")
