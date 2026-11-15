@@ -40,8 +40,8 @@ jobs:
         run: |
           set -e
           export PATH=$DEVKITARM/bin:$DEVKITPRO/tools/bin:$PATH
-          arm-none-eabi-gcc --version | head -1
-          cmake --version | head -1
+          arm-none-eabi-gcc --version
+          cmake --version
           for t in picasso 3dsxtool smdhtool bin2s; do
             command -v $t || { echo "Missing tool: $t"; exit 1; }
           done
@@ -84,7 +84,8 @@ jobs:
             PREFIX="$PORTLIBS_PREFIX" install
           test -f "$PORTLIBS_PREFIX/lib/libopenmpt.a"
           # Make sure it was built for the 3DS (ARM), not the PC
-          arm-none-eabi-objdump -f "$PORTLIBS_PREFIX/lib/libopenmpt.a" | grep -m1 "elf32-littlearm"
+          arm-none-eabi-objdump -f "$PORTLIBS_PREFIX/lib/libopenmpt.a" > /tmp/openmpt-check.txt
+          grep -q "elf32-littlearm" /tmp/openmpt-check.txt && echo "libopenmpt is built for the 3DS"
 
       - name: Provide stubs for unused audio libs if missing
         shell: bash
