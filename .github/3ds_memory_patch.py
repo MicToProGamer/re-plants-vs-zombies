@@ -288,4 +288,29 @@ with open(f"{ROOT}/{INPUT}", "w", encoding="utf-8") as f:
     f.write(INPUT_CPP)
 print(f"replaced {INPUT}")
 
+# ---------------------------------------------------------------------------
+# 5. Loading thread: the 3DS does not time-slice threads on the same CPU core,
+#    so the loading thread starved the main thread (frozen screen, 0 FPS while
+#    loading). Run it on another core instead.
+# ---------------------------------------------------------------------------
+APP = "SexyAppFramework/SexyAppBase.cpp"
+edit(APP,
+     "pthread_t id;\n\t\tpthread_create(&id, NULL, LoadingThreadProcStub, this);\n\t\tpthread_detach(id);",
+     """{
+			// Let the app use the system core (core 1) for up to 80% of its time
+			APT_SetAppCpuTimeLimit(80);
+			s32 aPrio = 0x30;
+			svcGetThreadPriority(&aPrio, CUR_THREAD_HANDLE);
+			if (aPrio < 0x3F) aPrio++;	// slightly lower priority than the main thread
+			auto aEntry = [](void* theArg) { SexyAppBase::LoadingThreadProcStub(theArg); };
+			const size_t aStack = 512 * 1024;
+			// New 3DS extra core first, then the system core, then the main core as a last resort
+			Thread aThread = threadCreate(aEntry, this, aStack, aPrio, 2, true);
+			if (aThread == NULL)
+				aThread = threadCreate(aEntry, this, aStack, aPrio, 1, true);
+			if (aThread == NULL)
+				aThread = threadCreate(aEntry, this, aStack, aPrio, -2, true);
+			printf("Loading thread %s\\n", aThread ? "started" : "FAILED to start");
+		}""")
+
 print("All 3DS patches applied.")
