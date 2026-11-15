@@ -1,0 +1,33 @@
+name: 3DS build
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitarm:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile libopenmpt for 3DS
+        shell: bash
+        run: |
+          source $DEVKITPRO/3dsvars.sh
+          git clone --depth 1 https://github.com/OpenMPT/openmpt
+          cd openmpt
+          make CONFIG=gcc SHARED_LIB=0 DYNLINK=0 EXAMPLES=0 OPENMPT123=0 TEST=0 PREFIX=$PORTLIBS_PREFIX install
+
+      - name: Run CMake and compile
+        shell: bash
+        run: |
+          source $DEVKITPRO/3dsvars.sh
+          mkdir build
+          cd build
+          arm-none-eabi-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O2
+          make
+
+      - name: Upload .3dsx artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: re-plants-vs-zombies-3ds
+          path: ./build/re-plants-vs-zombies.3dsx
