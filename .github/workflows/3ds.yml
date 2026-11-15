@@ -9,6 +9,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install 3DS libraries (SDL2, audio)
+        shell: bash
+        run: |
+          dkp-pacman -Sy --noconfirm
+          echo "Available 3DS SDL/audio packages:"
+          dkp-pacman -Sl | grep -iE "3ds-(sdl|mpg123|libogg|libvorbis|vorbis|tremor)" || true
+          for p in 3ds-sdl2 3ds-sdl 3ds-mpg123 3ds-libogg 3ds-libvorbisidec 3ds-libvorbis; do
+            if dkp-pacman -Si "$p" >/dev/null 2>&1; then
+              dkp-pacman -S --needed --noconfirm "$p"
+            else
+              echo "Package $p not found, skipping"
+            fi
+          done
+          ls /opt/devkitpro/portlibs/3ds/lib/cmake || true
+
       - name: Compile libopenmpt for 3DS
         shell: bash
         run: |
@@ -23,7 +38,7 @@ jobs:
           source $DEVKITPRO/3dsvars.sh
           mkdir build
           cd build
-          arm-none-eabi-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O2
+          arm-none-eabi-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O2 -DSDL2_DIR=$PORTLIBS_PREFIX/lib/cmake/SDL2
           make
 
       - name: Upload .3dsx artifact
