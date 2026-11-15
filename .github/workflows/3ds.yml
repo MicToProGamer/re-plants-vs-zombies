@@ -6,43 +6,116 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: devkitpro/devkitarm:latest
+    env:
+      DEVKITPRO: /opt/devkitpro
+      DEVKITARM: /opt/devkitpro/devkitARM
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install 3DS libraries (SDL2, audio)
+      - name: Apply 3DS memory patches
         shell: bash
         run: |
-          dkp-pacman -Sy --noconfirm
-          echo "Available 3DS SDL/audio packages:"
-          dkp-pacman -Sl | grep -iE "3ds-(sdl|mpg123|libogg|libvorbis|vorbis|tremor)" || true
-          for p in 3ds-sdl2 3ds-sdl 3ds-mpg123 3ds-libogg 3ds-libvorbisidec 3ds-libvorbis; do
+          set -e
+          command -v python3 >/dev/null || { apt-get update && apt-get install -y --no-install-recommends python3; }
+          # Last argument: 1 = 16-bit textures (saves memory), 0 = full-quality 32-bit textures
+          python3 .github/3ds_memory_patch.py . 1
+
+      - name: Install 3DS toolchain and libraries
+        shell: bash
+        run: |
+          set -e
+          dkp-pacman -Syu --noconfirm
+          dkp-pacman -S --needed --noconfirm 3ds-dev
+          # Optional audio libs the game's link line names (not actually used by its code)
+          for p in 3ds-libogg 3ds-mpg123; do
             if dkp-pacman -Si "$p" >/dev/null 2>&1; then
               dkp-pacman -S --needed --noconfirm "$p"
             else
-              echo "Package $p not found, skipping"
+              echo "Package $p not available, a stub will be used"
             fi
           done
-          ls /opt/devkitpro/portlibs/3ds/lib/cmake || true
 
-      - name: Compile libopenmpt for 3DS
+      - name: Check tools
         shell: bash
         run: |
+          set -e
+          export PATH=$DEVKITARM/bin:$DEVKITPRO/tools/bin:$PATH
+          arm-none-eabi-gcc --version | head -1
+          cmake --version | head -1
+          for t in picasso 3dsxtool smdhtool bin2s; do
+            command -v $t || { echo "Missing tool: $t"; exit 1; }
+          done
+          test -f $DEVKITPRO/cmake/3DS.cmake
+          test -f $DEVKITPRO/3dsvars.sh
+          test -f $DEVKITPRO/libctru/lib/libctru.a
+          test -f $DEVKITPRO/libctru/lib/libcitro3d.a || ls $DEVKITPRO/libctru/lib
+
+      - name: Build SDL2 for 3DS
+        shell: bash
+        run: |
+          set -e
           source $DEVKITPRO/3dsvars.sh
-          git clone --depth 1 https://github.com/OpenMPT/openmpt
+          git clone --depth 1 --branch release-2.30.12 https://github.com/libsdl-org/SDL.git SDL2-src
+          cmake -S SDL2-src -B SDL2-build \
+            -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/3DS.cmake" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TESTS=OFF
+          cmake --build SDL2-build -j4
+          cmake --install SDL2-build --prefix "$PORTLIBS_PREFIX"
+          test -f "$PORTLIBS_PREFIX/lib/cmake/SDL2/SDL2Config.cmake"
+          test -f "$PORTLIBS_PREFIX/lib/libSDL2.a"
+
+      - name: Build libopenmpt for 3DS
+        shell: bash
+        run: |
+          set -e
+          source $DEVKITPRO/3dsvars.sh
+          git clone --depth 1 --branch libopenmpt-0.8.10 https://github.com/OpenMPT/openmpt
           cd openmpt
-          make CONFIG=gcc SHARED_LIB=0 DYNLINK=0 EXAMPLES=0 OPENMPT123=0 TEST=0 PREFIX=$PORTLIBS_PREFIX install
+          make -j4 CONFIG=gcc \
+            CC=arm-none-eabi-gcc CXX=arm-none-eabi-g++ AR=arm-none-eabi-ar \
+            CXXFLAGS_STDCXX="-std=c++20 -fexceptions -frtti" \
+            CFLAGS_STDC="-std=c17" \
+            SHARED_LIB=0 STATIC_LIB=1 DYNLINK=0 EXAMPLES=0 OPENMPT123=0 TEST=0 \
+            NO_ZLIB=1 NO_MPG123=1 NO_OGG=1 NO_VORBIS=1 NO_VORBISFILE=1 \
+            NO_PORTAUDIO=1 NO_PORTAUDIOCPP=1 NO_PULSEAUDIO=1 NO_SDL2=1 \
+            NO_FLAC=1 NO_SNDFILE=1 \
+            PREFIX="$PORTLIBS_PREFIX" install
+          test -f "$PORTLIBS_PREFIX/lib/libopenmpt.a"
+          # Make sure it was built for the 3DS (ARM), not the PC
+          arm-none-eabi-objdump -f "$PORTLIBS_PREFIX/lib/libopenmpt.a" | grep -m1 "elf32-littlearm"
+
+      - name: Provide stubs for unused audio libs if missing
+        shell: bash
+        run: |
+          set -e
+          source $DEVKITPRO/3dsvars.sh
+          for l in ogg mpg123; do
+            if [ ! -f "$PORTLIBS_PREFIX/lib/lib$l.a" ]; then
+              echo "Creating empty lib$l.a"
+              arm-none-eabi-ar rcs "$PORTLIBS_PREFIX/lib/lib$l.a"
+            fi
+          done
 
       - name: Run CMake and compile
         shell: bash
         run: |
+          set -e
           source $DEVKITPRO/3dsvars.sh
-          mkdir build
-          cd build
-          arm-none-eabi-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O2 -DSDL2_DIR=$PORTLIBS_PREFIX/lib/cmake/SDL2
-          make
+          arm-none-eabi-cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS_RELEASE=-O1 \
+            -DCMAKE_C_FLAGS_RELEASE=-O1 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DSDL2_DIR="$PORTLIBS_PREFIX/lib/cmake/SDL2"
+          # Build in parallel; if it fails, rebuild one file at a time so the first error is easy to read
+          cmake --build build -j4 || { cmake --build build -j1 2>&1 | tail -150; exit 1; }
+          ls -la build/*.3dsx
 
       - name: Upload .3dsx artifact
         uses: actions/upload-artifact@v4
         with:
           name: re-plants-vs-zombies-3ds
           path: ./build/re-plants-vs-zombies.3dsx
+          if-no-files-found: error
